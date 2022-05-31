@@ -1,0 +1,854 @@
+---
+title: "Dynamics of MBD2 deposition across methylated DNA regions during malignant transformation of human mammary epithelial cells"
+author:
+- name: "Silvia González López"
+  email: silvia.gonzalez10@estudiant.upf.edu
+- name: "Sergio Suárez Dou"
+  email: sergio.suarez01@estudiant.upf.edu
+- name: "Eric Toro Delgado"
+  email: eric.toro01@estudiant.upf.edu
+date: "`r Sys.Date()`"
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    fig_captions: yes
+bibliography: bibliography.bib
+vignette: >
+  %\VignetteIndexEntry{IEOprojectAnalysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+<!--
+In this first chunk of code, which will not be shown in the resulting
+document (echo=FALSE) sets up global processing options, such as whether
+a comment character should appear before code results (set to the null
+character string in this case), collapse source and output blocks into
+a single code block (collapse=TRUE), align figures to the center
+(fig.align="center") or cache the results to speed up vignette building
+(cache=FALSE thus disabled in this case). A full description of possible
+options can be found at http://yihui.name/knitr/options
+--->
+
+```{r setup, echo=FALSE, cache=FALSE}
+library(knitr) ## kable()
+library(kableExtra) ## kable_styling(), save_kable()
+library(usethis) ## use_directory(), proj_path()
+knitr::opts_chunk$set(
+  collapse=TRUE,
+  comment="",
+  fig.align="center",
+  cache=FALSE
+)
+## this option avoid use_directory() being verbose later on
+options(usethis.quiet=TRUE)
+```
+
+# Introduction
+
+Regulation of gene expression can be driven by different forces; DNA methylation is one of them. This epigenetic modification, when present in transcriptional start sites, is associated with a downregulation of gene transcription. This silencing can be due to two different mechanisms: either the hampering of transcription factors attachment or the binding of specific proteins capable of inducing a repressive chromatin architecture, such as the MBD protein family. In particular, MBD2 has been extensively studied and defined as a methylation-dependent transcriptional repressor.
+
+Hence, this protein is expected to play a role on certain phenotypic transformations due to a direct effect on gene transcription. In the article from which results are studied in this report [@devailly15], the expression profile obtained by RNA-Seq experiments (publicly available under accession [GSE63234](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE63234)) was analyzed for immortalized and transformed human mammary cells obtained form cell line cultures (HMEC-hTERT and HMLER, respectively). This study aimed to assess the potential modifications of the MBD2 binding site associated with the acquisition of a specific transformed phenotype, in which methylation changes have been reported to be minor, thus allowing evaluation of MBD2 binding in a phenotypic transformation with semi-static methylation profile.
+
+In this report, we reanalyze the RNA-Seq data from [@devailly15] with the aim of detecting differences between siRNA treatments in order to assess the effect of the MBD2 protein on the expression profiles of three cell lines: HMLER, HME-shP53-RAS and HME-ZEB1-RAS.
+
+# Quality assessment
+
+## Data import and cleaning
+
+The first step of the processing is to import the raw table of counts.
+
+<!--
+The option 'message=FALSE' avoid dumping R messages such as "Loading required package: methods"
+into the output of the report.
+-->
+
+```{r, message=FALSE}
+devtools::document()
+library(SummarizedExperiment)
+se <- readRDS(file.path(system.file("extdata", package="IEOproject"), "GSE63234.rds"))
+se
+```
+
+We can see that the dataset contains information on `r nrow(se)` genes in `r ncol(se)` samples. From the first row and column names shown by the object, we can figure out that genes are defined by [Ensembl](https://www.ensembl.org/index.html) identifiers and samples by Sequence Read Archive Run ([SRR](https://www.ncbi.nlm.nih.gov/books/NBK56913/#search.what_do_the_different_sra_accessi)) identifiers.
+
+The row data in this object contains information about the profiled genes.
+
+```{r}
+head(rowData(se))
+```
+Phenotypic data can be explored by analyzing the column data.
+
+```{r}
+dim(colData(se))
+```
+There are a total of `r ncol(colData(se))` phenotypic variables.
+
+```{r}
+head(colData(se), n=3)
+```
+
+As certain datasets contain technical replicates (more than one transcriptomic profile associated to the same source of RNA), the next step is to assess the presence of samples with identical GEO Sample Accession Number:
+
+```{r}
+table(lengths(split(colnames(se), se$geo_accession)))
+```
+
+This result shows that the dataset, indeed, has `r length(unique(se$geo_accession))` individual samples, with no technical replicates.
+
+In order to perform the subsequent quality assessment and normalization of the RNA-seq data, a `DGEList` object is generated from the `SummarizedExperiment` object previously loaded.
+
+```{r, message=FALSE}
+library(edgeR)
+dge <- DGEList(counts=assays(se)$counts, genes=rowData(se))
+dim(dge)
+```
+It can be observed that the dimensions of the `DGEList` object coincide with the ones retrieved by the `SummarizedExperiment` object. 
+
+```{r}
+head(dge$samples, n=3)
+```
+
+In order to facilitate further analysis of the data, an additional element to the `SummarizedExperiment` object containing the logarithmically converted count per million reads (CPM), as they convey better distributions for ulterior representations.
+
+```{r}
+assays(se)$logCPM <- cpm(dge, log=TRUE)
+assays(se)$logCPM[1:5, 1:5]
+```
+
+An analysis of the information contained in the dataset shows that variables `cell line:ch1` and `treatment:ch1` contain the information about cell line and treatment, respectively.
+
+```{r}
+table(se$`cell line:ch1`)
+```
+```{r}
+table(se$`treatment:ch1`)
+```
+These keys correspond to the following treatments:
+
+Keyword             | Treatment 
+--------------------| ---------------------------------
+none                | No treatment
+siControl           | Negative control siRNA
+siMBD2              | siRNA targeting MBD2 transcripts
+5-aza-deoxycytidine | 5-aza-deoxycytidine (hypomethylating agent, DAC)
+
+
+Before further proceeding with the quality control, we check the experimantal design, that is, distribution of samples regarding both cell line and treatment, as shown below:
+
+```{r}
+table(se$`cell line:ch1`, se$`treatment:ch1`)
+```
+This information shows a clear disequilibrium in certain phenotypic conditions. Particularly, cell line HMEC-hTERT has only been subjected to a non-treatment and this treatment only competes said cell line, so no possible analysis can be made with these two conditions. 5-aza-deoxycytidine treatment is as well poorly designed, as it was only given to HMLER cells; in addition, preliminary exploration of the data showed systematic baises in these two samples. For both of these reasons, we decide to discard the non-treatment and the DAC treatment:
+
+
+```{r}
+# Turn these variables into factors
+se$cell_line <- as.factor(se$`cell line:ch1`)
+se$treatment <- as.factor(se$`treatment:ch1`)
+
+# Remove DAC and hTERT (i.e the none treatment)
+se <- se[, se$cell_line != "HMEC-hTERT"]
+se <- se[, se$treatment != "5-aza-deoxycytidine"]
+
+# Drop unnecessary factor levels
+se$treatment <- droplevels(se$treatment)
+se$cell_line <- droplevels(se$cell_line)
+
+# Filter the DGElist
+dge <- DGEList(counts=assays(se)$counts, genes=rowData(se))
+
+# Check the reduced experimental design
+table(se$cell_line, se$treatment)
+```
+
+We can see now that, once these samples are dropped, the resulting experimental design is balanced.
+
+After filtering the samples we keep exploring the variables. Other variables contained in the element include information on different technical factors, such as treatment protocol (`treatment_protocol_ch1`), cells growth protocol (`growth_protocol_ch1`) or sample preparation protocol (`extract_protocol_ch1`).
+
+```{r}
+table(se$treatment_protocol_ch1)
+```
+```{r}
+table(se$growth_protocol_ch1)
+```
+
+```{r}
+table(se$extract_protocol_ch1)
+```
+The same protocols were applied to all samples, so no batch effects can come from these variables.
+
+```{r, message=FALSE}
+for (i in colnames(colData(se))) {
+  print(i)
+  print(length(unique(colData(se)[,i])))
+  if(length(unique(colData(se)[,i]))>1){
+    print(unique(colData(se)[,i]))
+  }
+}
+```
+
+We observe that all variables that differ between samples are (with the exception of treatment and cell line) some type of sample identifier. 
+Therefore, none of the available variables are useful to try to correct for potential batch effects.
+
+Table \@ref(tab:pheno) shows sample identifiers along with their cell line and associated treatment.
+
+```{r pheno, echo=FALSE, message=FALSE}
+tmpdf <- data.frame("Identifer"=colnames(se),
+                    "Cell line"=gsub("cell line:","",se$cell_line),
+                    Treatment=gsub("treatment:","",se$treatment),
+                    check.names=FALSE)
+kable(tmpdf, caption="Phenotypic variables.")
+```
+
+## Sequencing depth
+
+Once this first assessment of the dataset has been performed, the following step on quality control is to observe the distribution of its sequencing depth --as total number of sequence read counts mapped to the genome per sample. Figure \@ref(fig:libsizes) shows this information per sample, ordered from lowest to largest. Cell lines are identified by color and the different treatments are indicated with a one-letter key.
+
+
+```{r libsizes, echo=FALSE, fig.height=8, fig.width=7, height=8, width=8, out.width="600px", fig.cap="Library sizes in increasing order, identified by cell line and treatment"}
+par(mar=c(7, 5, 2, 2))
+ord <- order(dge$sample$lib.size/1e6)
+ordmreads <- dge$sample$lib.size[ord]/1e6
+names(ordmreads) <- colnames(se)[ord]
+bp <- barplot(ordmreads, ylim=c(0,40), las=1, ylab="Millions of reads",
+              xlab="", col=as.integer(as.factor(se$cell_line[ord])), las=2)
+controlmask <- se$treatment[ord] == "siControl"
+MBD2mask <- se$treatment[ord] == "siMBD2"
+text(bp[controlmask, 1], dge$sample$lib.size[ord][controlmask]/1e6, "C", pos=3)
+text(bp[MBD2mask, 1], dge$sample$lib.size[ord][MBD2mask]/1e6, "M", pos=3)
+legend("bottomright", c(levels(se$cell_line), "siControl", "siMBD2"), inset=0.05,
+       pch=c(rep(15, nlevels(se$cell_line)), 67, 77, 65),
+       col=c(seq_len(nlevels(se$cell_line)), "black", "black"),
+       cex=1)
+```
+
+Sequencing depth ranges from `r round(min(dge$sample$lib.size/1e6), digits=0)` to
+`r round(max(dge$sample$lib.size/1e6), digits=0)` million reads, showing a reasonably narrow margin. Biases on the distribution of library sizes across phenotypic characteristics can be seen, as HME-shP53-RAS cell line is displaced towards a lower sequencing depth than average.
+
+## Distribution of expression levels among samples
+
+Figure \@ref(fig:distRawExp) below shows the distribution of expression values per sample in logarithmic CPM units of expression.
+
+```{r distRawExp, echo=FALSE, fig.height=5, fig.width=5, out.width="600px", fig.cap="Non-parametric density distribution of expression profiles per sample.", message=FALSE}
+library(geneplotter)
+par(mar=c(4, 5, 1, 1))
+lst <- as.list(as.data.frame(assays(se)$logCPM))
+multidensity(lst, xlab=expression(""* log[2] * "CPM"),
+             main="", las=1)
+```
+It can be seen that the expression profiles are largely homogeneous across all samples. Figure \@ref(fig:boxplotRawExp) shows a boxplot in which we can observe the quantiles of the sample expression distributions.
+
+```{r boxplotRawExp, echo=FALSE, fig.height=5, fig.width=5, fig.cap="Boxplot of expression levels per sample (log~2~CPM).", message=FALSE}
+par(mar=c(7.5, 5, 1, 1))
+boxplot(assays(se)$logCPM, col="gray", las=2, ylab=expression(log[2] * "CPM"),
+        cex.axis=1.2, cex.lab=1.5)
+```
+
+Again we observe no large differences among samples.
+
+## Distribution of expression levels among genes
+Observing the distribution of expression levels across genes (Figure \@ref(fig:exprdist)) allows to identify lowly expressed genes.
+
+```{r exprdist, echo=FALSE, out.width="600px", fig.cap="Distribution of average expression level per gene."}
+avgexp <- rowMeans(assays(se)$logCPM)
+hist(avgexp, xlab=expression(""* log[2] * "CPM"), main="", las=1, xlim = c(-5, 15))
+#abline(v=1, col="red", lwd=2)
+```
+The distribution shows the expected profile, with a peak on lowly-expressed genes and a second peak corresponding to genes with higher expression.
+
+## Filtering of lowly-expressed genes
+
+Given that RNA-seq expression profiles from lowly-expressed genes can lead to artifacts in further analyses, they should be removed from the dataset.
+
+The approach to choose the removed genes used in this workflow filters out those below a minimum CPM in a given number of samples, keeping only genes that have this minimum level of expression in at least as many samples as the smallest group of comparison. This comparison is performed considering treatment-based groups, as this is the variable that we will focus on for the differential expression analysis.
+
+The filtering is applied to both the `DGEList` and the `SummarizedExperiment` objects.
+
+```{r}
+mask <- filterByExpr(dge, group=se$treatment)
+se.filt <- se[mask, ]
+dim(se.filt)
+dge.filt <- dge[mask, ]
+```
+
+After the filtering, the dataset is left with `r nrow(se.filt)` genes. A new distribution of expression levels can be seen in red in Figure \@ref(fig:exprdistfilt).
+
+```{r exprdistfilt, echo=FALSE, fig.height=4, fig.width=4, out.width="600px", fig.cap="Distribution of average expression level per gene before and after filtering."}
+h <- hist(avgexp, xlab=expression("Expression level (" * log[2] * "CPM)"),
+                    main="", las=1, col="grey", cex.axis=1, cex.lab=1.1, xlim=c(-5,15))
+x <- cut(rowMeans(assays(se.filt)$logCPM), breaks=h$breaks)
+lines(h$mids, table(x), type="h", lwd=10, lend=1, col="darkred")
+legend("topright", c("All genes", "Filtered genes"), fill=c("grey", "darkred"))
+```
+
+## Normalization
+
+Next, between-sample normalization (adjustments to compare a feature across samples) is performed using the TMM algorithm [@robinson10]:
+
+```{r}
+dge.filt <- calcNormFactors(dge.filt)
+```
+
+The normalization factors are applied to the original data on logCPM to obtained the corrected values in the `SummarizedExperiment` object:
+
+```{r}
+assays(se.filt)$logCPM <- cpm(dge.filt, log=TRUE, normalized.lib.sizes=TRUE)
+```
+
+After normalization, we plot again each sample's expression profile and 
+expression boxplots, shown in figures \@ref(fig:expProfileNorm) and 
+\@ref(fig:boxplotNorm), respectively:
+
+```{r, expProfileNorm, echo=FALSE, fig.cap="Non-parametric density distribution of expression profiles per sample after normalization."}
+par(mar=c(4, 5, 1, 1))
+lst <- as.list(as.data.frame(assays(se.filt)$logCPM))
+multidensity(lst, xlab="log 2 CPM",
+             main="", las=1)
+```
+
+```{r boxplotNorm, echo=FALSE, fig.cap="Boxplot of expression levels per sample (log~2~CPM) after normalization."}
+par(mar=c(7.5, 5, 1, 1), oma=c(1.5,0,0,0))
+boxplot(assays(se.filt)$logCPM, col="gray", las=2, ylab=expression(log[2] * "CPM"),
+        cex.axis=1.2, cex.lab=1.5)
+```
+As expected after filtering, the expression profiles no longer show a peak of lowly expressed genes, and the boxplots are narrower and with higher medians. No large differences are observed in any of the samples relative to the others.
+
+## MA-plots
+
+In order to detect possible intensity-dependent biases, MA-plots are represented. Figure \@ref(fig:maPlots) shows the MA-plots of each analyzed sample (after filtering and normalization) against the average of the rest of the samples. The red line indicates the average logFC relative to the mean logCMP values.
+
+```{r maPlots, fig.height=15, fig.width=10, dpi=100, echo=FALSE, fig.cap="MA-plots of filtered and normalized expression values."}
+par(mfrow=c(5, 4), mar=c(4, 5, 3, 1))
+for (i in 1:ncol(se.filt)) {
+  A <- rowMeans(assays(se.filt)$logCPM)
+  M <- assays(se.filt)$logCPM[, i] - A
+  smoothScatter(A, M, main=colnames(se.filt)[i], las=1)
+  abline(h=0, col="blue", lwd=2)
+  lo <- lowess(M ~ A)
+  lines(lo$x, lo$y, col="red", lwd=2)
+}
+```
+
+It can be seen that overall the plots show relatively low biases, with relatively small deviations of the red line from the x-axis of 0 logFC. In addition, samples with slight upward deviations correspond to those with the siMBD2 treatment, while those with a slightly downward deviation correspond to those with the siControl treatment, so this variation is related to the biological outcome of interest.
+
+
+### WARNING: THIS IS THE STRICTER FILTER!!! REMOVE IF WE DON'T USE IT AT THE END
+Since the smearPlot still shows many genes with very low counts and large logFCs, we decide to apply a stricter filter by taking out all genes with a logCPM < 1
+
+```{r}
+#mask <- rowMeans(assays(se)$logCPM)>1
+#se.filt <- se[mask,]
+#dge.filt <- dge[mask,]
+#dim(se.filt)
+```
+
+We repeat again the normalization steps:
+```{r}
+#dge.filt <- calcNormFactors(dge.filt)
+```
+
+```{r}
+#assays(se.filt)$logCPM <- cpm(dge.filt, log=TRUE, normalized.lib.sizes=TRUE)
+```
+
+Lastly, MA-plots and smearPlots are repeated. Figure \@ref(fig:maPlotStrictFilter) represents the whole set of samples for cells treated with siMBD2 and negative controls (treated with unspecific siRNA)
+
+```{r maPlotStrictFilter, fig.height=5, fig.width=5, dpi=100, echo=FALSE, fig.cap="MA-plot of expression values after filtering out genes with logCPM < 1."}
+#dge.filt$samples$group <- se$treatment
+#dge$samples$group <- se$treatment
+#plotSmear(dge.filt, pair=c("siControl", "siMBD2"), lowess=TRUE, xlab=expression("Expression level (" * log[2] * "CPM)"), ylab="logFC: treatment")
+#abline(h=0, col="blue", lwd=2)
+```
+
+Figure \@ref(fig:maPlotsStrictFilter) shows the MA-plots of each analyzed sample (after filtering) against the average of the rest of the samples.
+
+```{r maPlotsStrictFilter, fig.height=15, fig.width=10, dpi=100, echo=FALSE, fig.cap="MA-plots of expression values after filtering out genes with logCPM < 1."}
+#par(mfrow=c(5, 4), mar=c(4, 5, 3, 1))
+#for (i in 1:ncol(se.filt)) {
+  #A <- rowMeans(assays(se.filt)$logCPM)
+#  M <- assays(se.filt)$logCPM[, i] - A
+#  smoothScatter(A, M, main=colnames(se.filt)[i], las=1)
+  #abline(h=0, col="blue", lwd=2)
+  #lo <- lowess(M ~ A)
+  #lines(lo$x, lo$y, col="red", lwd=2)
+#}
+```
+
+Now the orange zone corresponding to very lowly expresed genes with unreliable logFCs has been removed, and the MA-plots also show less bias, so the stricter filtering has improved the dataset.
+
+## Batch effect identification
+
+Representations such as hierarchical clustering and multidimensional scaling help to identify possible batch effects. The former is shown in Figure \@ref(fig:sampleClustering), based on newly computed log CPM values with a high prior count(3) to moderate extreme fold-changes produced by low counts.
+
+```{r sampleClustering, fig.height=5, fig.width=8, dpi=100, echo=FALSE, fig.cap="Hierarchical clustering of the samples; labels correspond to treatment and sample identifer, while colors indicate cell line."}
+logCPM <- cpm(dge.filt, log=TRUE, prior.count=3)
+d <- as.dist(1-cor(logCPM, method="spearman"))
+sampleClustering <- hclust(d)
+batch <- as.integer(as.factor(se.filt$cell_line))
+sampleDendrogram <- as.dendrogram(sampleClustering, hang=0.1)
+names(batch) <- colnames(se.filt)
+outcome <- paste(se.filt$treatment, colnames(se), sep="\n")
+names(outcome) <- colnames(se.filt)
+sampleDendrogram <- dendrapply(sampleDendrogram,
+                               function(x, batch, labels) {
+                                 if (is.leaf(x)) {
+                                   attr(x, "nodePar") <- list(lab.col=as.vector(batch[attr(x, "label")]))
+                                   attr(x, "label") <- as.vector(labels[attr(x, "label")])
+                                 }
+                                 x
+                               }, batch, outcome)
+plot(sampleDendrogram,
+     cex=0.7)
+legend("topright", levels(se.filt$cell_line),
+       fill=seq_len(nlevels(se.filt$cell_line)))
+```
+
+It can be seen that, as expected, samples cluster together by cell lines and, within each cell line, they cluster by treatment. It can as well be seen that HME-ZEB1-RAS cell line and HME-shP53-RAS cell lines also cluster together, although discerning between the different treatments.
+
+Figure \@ref(fig:mdsPlot) shows the corresponding MDS plot for this same dataset.
+
+```{r mdsPlot, fig.height=5, fig.width=8, dpi=100, echo=FALSE, fig.cap="Multidimensional scaling plot of the samples; labels correspond to treatment and colors indicate cell line."}
+outcome <- se.filt$treatment
+names(outcome) <- colnames(se.filt)
+plotMDS(dge.filt, labels=outcome, col=batch)
+legend("bottomright", levels(se.filt$cell_line),
+       fill=seq_len(nlevels(se.filt$cell_line)), inset=0.05, cex = 0.8)
+```
+
+This plot shows an even clearer distinction of samples due to cell line rather than treatment-wise, with the exception of HMLER cell line, which also shows a clear separation based on treatment. For the other two cell lines, differences among treatment appear less pronounced.
+
+
+# Differential expression
+
+WRITE WHAT WE ARE DOING WITH THIS PLOT
+```{r maPlot, fig.height=5, fig.width=5, dpi=100, echo=FALSE, fig.cap="MA-plot of filtered and normalized expression values for the negative control (treated with unspecific siRNA) and siMBD2-treated groups."}
+dge.filt$samples$group <- se.filt$treatment
+#dge$samples$group <- se$treatment
+plotSmear(dge.filt[,se.filt$cell_line=="HMLER"], pair=c("siControl", "siMBD2"), lowess=TRUE, xlab=expression("Expression level (" * log[2] * "CPM)"), ylab="logFC: treatment")
+abline(h=0, col="blue", lwd=2)
+
+plotSmear(dge.filt[,se.filt$cell_line=="HME-ZEB1-RAS"], pair=c("siControl", "siMBD2"), lowess=TRUE, xlab=expression("Expression level (" * log[2] * "CPM)"), ylab="logFC: treatment")
+abline(h=0, col="blue", lwd=2)
+
+plotSmear(dge.filt[,se.filt$cell_line=="HME-shP53-RAS"], pair=c("siControl", "siMBD2"), lowess=TRUE, xlab=expression("Expression level (" * log[2] * "CPM)"), ylab="logFC: treatment")
+abline(h=0, col="blue", lwd=2)
+
+plotSmear(dge.filt, pair=c("siControl", "siMBD2"), lowess=TRUE, xlab=expression("Expression level (" * log[2] * "CPM)"), ylab="logFC: treatment", main="All cell lines")
+abline(h=0, col="blue", lwd=2)
+```
+
+```{r}
+batch <- as.integer(as.factor(se.filt$cell_line))
+names(batch) <- colnames(se.filt)
+outcome <- se.filt$treatment
+names(outcome) <- colnames(se.filt)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(sva)
+```
+
+After performing this analysis, we generate tables showing the differentially-expressed genes between negative controls (treated with unspecific siRNA) and siMBD2-treated cells with FDR < 10% and Bonferroni < 10%.
+
+**THIS IS NOT RUNNING RIGHT NOW**
+```{r, message=FALSE}
+# mask.HMLER.bf <- p.adjust(pv.HMLER, method="bonferroni") < 0.1 & !is.na(pv.HMLER)
+# mask.P53.bf <- p.adjust(pv.P53, method="bonferroni") < 0.1 & !is.na(pv.P53)
+# mask.ZEB1.bf <- p.adjust(pv.ZEB1, method="bonferroni") < 0.1 & !is.na(pv.ZEB1)
+# mask.HMLER.fdr <- p.adjust(pv.HMLER, method="fdr") < 0.1 & !is.na(pv.HMLER)
+# mask.P53.fdr <- p.adjust(pv.P53, method="fdr") < 0.1 & !is.na(pv.P53)
+# mask.ZEB1.fdr <- p.adjust(pv.ZEB1, method="fdr") < 0.1 & !is.na(pv.ZEB1)
+# DEgenesEGs.HMLER.bf <- names(pv.HMLER)[mask.HMLER.bf]
+# DEgenesEGs.P53.bf <- names(pv.P53)[mask.P53.bf]
+# DEgenesEGs.ZEB1.bf <- names(pv.ZEB1)[mask.ZEB1.bf]
+# DEgenesEGs.HMLER.fdr <- names(pv.HMLER)[mask.HMLER.fdr]
+# DEgenesEGs.P53.fdr <- names(pv.P53)[mask.P53.fdr]
+# DEgenesEGs.ZEB1.fdr <- names(pv.ZEB1)[mask.ZEB1.fdr]
+# DEgenesSyms.HMLER.bf <- mcols(se.filt)[DEgenesEGs.HMLER.bf, "symbol"]
+# DEgenesSyms.P53.bf <- mcols(se.filt)[DEgenesEGs.P53.bf, "symbol"]
+# DEgenesSyms.ZEB1.bf <- mcols(se.filt)[DEgenesEGs.ZEB1.bf, "symbol"]
+# DEgenesSyms.HMLER.fdr <- mcols(se.filt)[DEgenesEGs.HMLER.fdr, "symbol"]
+# DEgenesSyms.P53.fdr <- mcols(se.filt)[DEgenesEGs.P53.fdr, "symbol"]
+# DEgenesSyms.ZEB1.fdr <- mcols(se.filt)[DEgenesEGs.ZEB1.fdr, "symbol"]
+# DEgenesPvalue.HMLER.bf <- pv.HMLER[mask.HMLER.bf]
+# DEgenesPvalue.P53.bf <- pv.P53[mask.P53.bf]
+# DEgenesPvalue.ZEB1.bf <- pv.ZEB1[mask.ZEB1.bf]
+# DEgenesPvalue.HMLER.fdr <- pv.HMLER[mask.HMLER.fdr]
+# DEgenesPvalue.P53.fdr <- pv.P53[mask.P53.fdr]
+# DEgenesPvalue.ZEB1.fdr <- pv.ZEB1[mask.ZEB1.fdr]
+# DEgenesDesc.HMLER.bf <- mcols(se.filt)[DEgenesEGs.HMLER.bf, "description"]
+# DEgenesDesc.P53.bf <- mcols(se.filt)[DEgenesEGs.P53.bf, "description"]
+# DEgenesDesc.ZEB1.bf <- mcols(se.filt)[DEgenesEGs.ZEB1.bf, "description"]
+# DEgenesDesc.HMLER.fdr <- mcols(se.filt)[DEgenesEGs.HMLER.fdr, "description"]
+# DEgenesDesc.P53.fdr <- mcols(se.filt)[DEgenesEGs.P53.fdr, "description"]
+# DEgenesDesc.ZEB1.fdr <- mcols(se.filt)[DEgenesEGs.ZEB1.fdr, "description"]
+# DEgenesDesc.HMLER.bf <- sub(" \\[.+\\]", "", DEgenesDesc.HMLER.bf)
+# DEgenesDesc.P53.bf <- sub(" \\[.+\\]", "", DEgenesDesc.P53.bf)
+# DEgenesDesc.ZEB1.bf <- sub(" \\[.+\\]", "", DEgenesDesc.ZEB1.bf)
+# DEgenesDesc.HMLER.fdr <- sub(" \\[.+\\]", "", DEgenesDesc.HMLER.fdr)
+# DEgenesDesc.P53.fdr <- sub(" \\[.+\\]", "", DEgenesDesc.P53.fdr)
+# DEgenesDesc.ZEB1.fdr <- sub(" \\[.+\\]", "", DEgenesDesc.ZEB1.fdr)
+# DEgenesTab.HMLER.bf <- data.frame(EnsemblID=DEgenesEGs.HMLER.bf,
+#                          Symbol=DEgenesSyms.HMLER.bf,
+#                          Description=DEgenesDesc.HMLER.bf,
+#                          "P value"=DEgenesPvalue.HMLER.bf,
+#                          stringsAsFactors=FALSE, check.names=FALSE, row.names=NULL)
+# DEgenesTab.P53.bf <- data.frame(EnsemblID=DEgenesEGs.P53.bf,
+#                          Symbol=DEgenesSyms.P53.bf,
+#                          Description=DEgenesDesc.P53.bf,
+#                          "P value"=DEgenesPvalue.P53.bf,
+#                          stringsAsFactors=FALSE, check.names=FALSE, row.names=NULL)
+# DEgenesTab.ZEB1.bf <- data.frame(EnsemblID=DEgenesEGs.ZEB1.bf,
+#                          Symbol=DEgenesSyms.ZEB1.bf,
+#                          Description=DEgenesDesc.ZEB1.bf,
+#                          "P value"=DEgenesPvalue.ZEB1.bf,
+#                          stringsAsFactors=FALSE, check.names=FALSE, row.names=NULL)
+# DEgenesTab.HMLER.fdr <- data.frame(EnsemblID=DEgenesEGs.HMLER.fdr,
+#                          Symbol=DEgenesSyms.HMLER.fdr,
+#                          Description=DEgenesDesc.HMLER.fdr,
+#                          "P value"=DEgenesPvalue.HMLER.fdr,
+#                          stringsAsFactors=FALSE, check.names=FALSE, row.names=NULL)
+# DEgenesTab.P53.fdr <- data.frame(EnsemblID=DEgenesEGs.P53.fdr,
+#                          Symbol=DEgenesSyms.P53.fdr,
+#                          Description=DEgenesDesc.P53.fdr,
+#                          "P value"=DEgenesPvalue.P53.fdr,
+#                          stringsAsFactors=FALSE, check.names=FALSE, row.names=NULL)
+# DEgenesTab.ZEB1.fdr <- data.frame(EnsemblID=DEgenesEGs.ZEB1.fdr,
+#                          Symbol=DEgenesSyms.ZEB1.fdr,
+#                          Description=DEgenesDesc.ZEB1.fdr,
+#                          "P value"=DEgenesPvalue.ZEB1.fdr,
+#                          stringsAsFactors=FALSE, check.names=FALSE, row.names=NULL)
+# DEgenesTab.HMLER.bf <- DEgenesTab.HMLER.bf[order(DEgenesTab.HMLER.bf[["P value"]]), ] ## order by p-value
+# DEgenesTab.P53.bf <- DEgenesTab.P53.bf[order(DEgenesTab.P53.bf[["P value"]]), ] ## order by p-value
+# DEgenesTab.ZEB1.bf <- DEgenesTab.ZEB1.bf[order(DEgenesTab.ZEB1.bf[["P value"]]), ] ## order by p-value
+# DEgenesTab.HMLER.fdr <- DEgenesTab.HMLER.fdr[order(DEgenesTab.HMLER.fdr[["P value"]]), ] ## order by p-value
+# DEgenesTab.P53.fdr <- DEgenesTab.P53.fdr[order(DEgenesTab.P53.fdr[["P value"]]), ] ## order by p-value
+# DEgenesTab.ZEB1.fdr <- DEgenesTab.ZEB1.fdr[order(DEgenesTab.ZEB1.fdr[["P value"]]), ] ## order by p-value
+# rownames(DEgenesTab.HMLER.bf) <- 1:nrow(DEgenesTab.HMLER.bf)
+# rownames(DEgenesTab.P53.bf) <- 1:nrow(DEgenesTab.P53.bf)
+# rownames(DEgenesTab.ZEB1.bf) <- 1:nrow(DEgenesTab.ZEB1.bf)
+# rownames(DEgenesTab.HMLER.fdr) <- 1:nrow(DEgenesTab.HMLER.fdr)
+# rownames(DEgenesTab.P53.fdr) <- 1:nrow(DEgenesTab.P53.fdr)
+# rownames(DEgenesTab.ZEB1.fdr) <- 1:nrow(DEgenesTab.ZEB1.fdr)
+```
+
+<!--
+The following code chunk is hidden because its lines are not that relevant
+to the analysis of the data. Their purpose is to dump the table of DE genes
+into an HTML table and a CSV file to facilitate the examination of long lists
+of DE genes while avoiding to produce a lengthy vignette by showing only the
+top-10 DE genes.
+--->
+
+**THIS IS NOT RUNNING RIGHT NOW**
+```{r, echo=FALSE}
+# ## generate full table in a CSV file and store it in the 'doc' directory
+# ## twice, once in 'doc' to enable quickly look up during vignette editing
+# ## and building with 'devtools::build_vignettes()' and a second time in
+# ## 'inst/doc' to make these files available at install.
+# DEgenesTab <- list(DEgenesTab.HMLER.bf=DEgenesTab.HMLER.bf,
+#                    `DEgenesTab.HME-shP53-RAS.bf`=DEgenesTab.P53.bf,
+#                    `DEgenesTab.HME-ZEB1-RAS.bf`=DEgenesTab.ZEB1.bf,
+#                    DEgenesTab.HMLER.fdr=DEgenesTab.HMLER.fdr,
+#                    `DEgenesTab.HME-shP53-RAS.fdr`=DEgenesTab.P53.fdr,
+#                    `DEgenesTab.HME-ZEB1-RAS.fdr`=DEgenesTab.ZEB1.fdr)
+# use_directory(file.path("doc"))
+# use_directory(file.path("inst", "doc"))
+# fnameCSV <- c("")
+# fnameHTML <- c("")
+# 
+# for (i in 1:length(DEgenesTab)) {
+#   fnameCSV[i] <- paste0(names(DEgenesTab)[i],".csv")
+#   fpathCSV <- proj_path(file.path("doc", fnameCSV[i]))
+#   write.csv(DEgenesTab[i], fpathCSV, row.names=FALSE)
+#   fpathCSV <- proj_path(file.path("inst", "doc", fnameCSV[i]))
+#   write.csv(DEgenesTab[i], fpathCSV, row.names=FALSE)
+#   ## generate full table in HTML and store it into the 'doc' directory
+#   ## twice, just as we did with the CSV file
+#   nombres <- strsplit(names(DEgenesTab)[i], "[.]")
+#   if (nombres[[1]][3]=="fdr") {
+#     ktab <- kable(DEgenesTab[i], "html", escape=FALSE, row.names=TRUE,
+#               caption=sprintf(paste0("Differentially expressed genes between control and siMDB2-treated ", nombres[[1]][2], " cell line with FDR < 10%% (CSV <a href=\"%s\" download>file</a>)."),fnameCSV[i]))
+#   } else if (nombres[[1]][3]=="bf") {
+#     ktab <- kable(DEgenesTab[i], "html", escape=FALSE, row.names=TRUE,
+#               caption=sprintf(paste0("Differentially expressed genes between control and siMDB2-treated ", nombres[[1]][2], " cell line with Bonferroni < 10%% (CSV <a href=\"%s\" download>file</a>)."),fnameCSV[i]))
+#   }
+# 
+#   ktab <- kable_styling(ktab,
+#                       bootstrap_options=c("stripped", "hover", "responsive"),
+#                       fixed_thead=TRUE)
+#   fnameHTML[i] <- paste0(names(DEgenesTab)[i],".html")
+#   fpathHTML <- proj_path(file.path("doc", fnameHTML[i]))
+#   save_kable(ktab, file=fpathHTML, self_contained=TRUE)
+#   fpathHTML <- proj_path(file.path("inst", "doc", fnameHTML[i]))
+#   save_kable(ktab, file=fpathHTML, self_contained=TRUE)
+# }
+```
+
+<!--
+The following code chunk is also hidden because its purpose is to produce
+a short HTML table of the top-10 DE genes. The reason show here only the
+top-10 genes is to producing a long vignette. The full HTML table and the
+corresponding CSV file are linked through the caption of this short HTML
+table.I
+--->
+
+Table \@ref(tab:DEgenesHMLERbf) shows the set of `r sum(p.adjust(pv.HMLER, method="bonferroni") < 0.1 & !is.na(pv.HMLER))` DE genes with Bonferroni < 10% in HMLER cell line.
+
+**NOT RUNNING**
+```{r DEgenesHMLERbf, echo=FALSE}
+# library(kableExtra)
+# kable(DEgenesTab.HMLER.bf, "html", escape=FALSE, row.names=TRUE, 
+#       caption=sprintf("Differentially expressed genes between control and siMDB2-treated HMLER cell line with Bonferroni < 10%%. To see the full list of DE genes, follow this <a href=\"%s\" target=\"_blank\">link</a> or download this CSV <a href=\"%s\" download>file</a>.",
+#                       fnameHTML[1], fnameCSV[1])) %>%
+#   kable_styling(font_size = 15)
+```
+
+Table \@ref(tab:DEgenesZEB1bf) shows the set of `r sum(p.adjust(pv.ZEB1, method="bonferroni") < 0.1 & !is.na(pv.ZEB1))` DE genes with Bonferroni < 10% in HME-ZEB1-RAS cell line.
+
+**NOT RUNNING**
+```{r DEgenesZEB1bf, echo=FALSE}
+# kable(DEgenesTab.ZEB1.bf, "html", escape=FALSE, row.names=TRUE, 
+#       caption=sprintf("Differentially expressed genes between control and siMDB2-treated HME-ZEB1-RAS cell line with Bonferroni < 10%%. To see the full list of DE genes, follow this <a href=\"%s\" target=\"_blank\">link</a> or download this CSV <a href=\"%s\" download>file</a>.",
+#                       fnameHTML[3], fnameCSV[3])) %>%
+#   kable_styling(font_size = 15)
+```
+
+Table \@ref(tab:DEgenesP53bf) shows the set of `r sum(p.adjust(pv.P53, method="bonferroni") < 0.1 & !is.na(pv.P53))` DE genes with Bonferroni < 10% in HME-shP53-RAS cell line.
+
+```{r DEgenesP53bf, echo=FALSE}
+# kable(DEgenesTab.P53.bf, "html", escape=FALSE, row.names=TRUE, 
+#       caption=sprintf("Differentially expressed genes between control and siMDB2-treated HME-shP53-RAS cell line with Bonferroni < 10%%. To see the full list of DE genes, follow this <a href=\"%s\" target=\"_blank\">link</a> or download this CSV <a href=\"%s\" download>file</a>.",
+#                       fnameHTML[2], fnameCSV[2])) %>%
+#   kable_styling(font_size = 15)
+```
+
+## Factorial analysis with linear models
+```{r}
+# co <- factor(paste(se.filt$cell_line, se.filt$treatment, sep="."))
+# co <- as.factor(gsub("-","_",co))
+# table(co)
+```
+
+```{r Factorial design comparing treated and control}
+# mod <- model.matrix(~ 0 + co, colData(se.filt))
+# head(mod)
+# 
+# fit <- lmFit(assays(se.filt)$logCPM, mod)
+# cont.matrix.treatment <- makeContrasts(shP53=coHME_shP53_RAS.siMBD2-coHME_shP53_RAS.siControl,
+#                                        ZEB1=coHME_ZEB1_RAS.siMBD2-coHME_ZEB1_RAS.siControl,
+#                                        HMLER=coHMLER.siMBD2-coHMLER.siControl,
+#                                        levels=mod)
+# fit.treatment <- contrasts.fit(fit, cont.matrix.treatment)
+# fit.treatment <- eBayes(fit.treatment, trend=TRUE)
+# head(fit.treatment$t)
+# res.treatment <- decideTests(fit.treatment, p.value=0.05)
+# summary(res.treatment)
+# 
+# library(UpSetR)
+# res.treatment <- as.data.frame(abs(res.treatment))
+# upset(res.treatment)
+# 
+# ttshP53 <- topTable(fit.treatment, coef="shP53", n=Inf)
+# ttZEB1 <- topTable(fit.treatment, coef="ZEB1", n=Inf)
+# ttHMLER <- topTable(fit.treatment, coef="HMLER", n=Inf)
+# 
+# hist(ttshP53$P.Value, ylim = c(0, 1000))
+# hist(ttZEB1$P.Value, ylim = c(0, 1000))
+# hist(ttHMLER$P.Value, ylim = c(0, 1000))
+```
+
+```{r Factorial design comparing cell lines}
+# cont.matrix.cellline <- makeContrasts(control1=coHMLER.siControl-coHME_shP53_RAS.siControl,
+#                                       control2=coHMLER.siControl-coHME_ZEB1_RAS.siControl,
+#                                       control3=coHME_ZEB1_RAS.siControl-coHME_shP53_RAS.siControl,
+#                                       treat1=coHMLER.siMBD2-coHME_shP53_RAS.siMBD2,
+#                                       treat2=coHMLER.siMBD2-coHME_ZEB1_RAS.siMBD2,
+#                                       treat3=coHME_ZEB1_RAS.siMBD2-coHME_shP53_RAS.siMBD2,
+#                                       levels=mod)
+# fit.cellline <- contrasts.fit(fit, cont.matrix.cellline)
+# fit.cellline <- eBayes(fit.cellline, trend=TRUE)
+# head(fit.cellline$t)
+# res.cellline <- decideTests(fit.cellline, p.value=0.05)
+# summary(res.cellline)
+# 
+# res.cellline <- as.data.frame(abs(res.cellline))
+# upset(res.cellline, nsets = 6)
+# 
+# ttcontrol1 <- topTable(fit.cellline, coef="control1", n=Inf)
+# ttcontrol2 <- topTable(fit.cellline, coef="control2", n=Inf)
+# ttcontrol3 <- topTable(fit.cellline, coef="control3", n=Inf)
+# tttreat1 <- topTable(fit.cellline, coef="treat1", n=Inf)
+# tttreat2 <- topTable(fit.cellline, coef="treat2", n=Inf)
+# tttreat3 <- topTable(fit.cellline, coef="treat3", n=Inf)
+# 
+# hist(ttcontrol1$P.Value)
+# hist(ttcontrol2$P.Value)
+# hist(ttcontrol3$P.Value)
+# hist(tttreat1$P.Value)
+# hist(tttreat2$P.Value)
+# hist(tttreat3$P.Value)
+```
+
+
+```{r Limited replication comparing treatments for each cell line}
+# se.lim.HMLER <- se.filt[, se.filt$`cell line:ch1` == "HMLER"]
+# se.lim.P53 <- se.filt[, se.filt$`cell line:ch1` == "HME-shP53-RAS"]
+# se.lim.ZEB1 <- se.filt[, se.filt$`cell line:ch1` == "HME-ZEB1-RAS"]
+# 
+# 
+# mod.lim.HMLER <- model.matrix(~ se.lim.HMLER$treatment, colData(se.lim.HMLER))
+# mod.lim.P53 <- model.matrix(~ se.lim.P53$treatment, colData(se.lim.P53))
+# mod.lim.ZEB1 <- model.matrix(~ se.lim.ZEB1$treatment, colData(se.lim.ZEB1))
+# 
+# dge.lim.HMLER <- DGEList(counts=assays(se.lim.HMLER)$counts,
+#                          genes=data.frame(Symbol=mcols(se.lim.HMLER)$symbol))
+# dge.lim.P53 <- DGEList(counts=assays(se.lim.P53)$counts,
+#                        genes=data.frame(Symbol=mcols(se.lim.P53)$symbol))
+# dge.lim.ZEB1 <- DGEList(counts=assays(se.lim.ZEB1)$counts,
+#                         genes=data.frame(Symbol=mcols(se.lim.ZEB1)$symbol))
+# 
+# dge.lim.HMLER <- estimateDisp(dge.lim.HMLER, mod.lim.HMLER)
+# dge.lim.P53 <- estimateDisp(dge.lim.P53, mod.lim.P53)
+# dge.lim.ZEB1 <- estimateDisp(dge.lim.ZEB1, mod.lim.ZEB1)
+# 
+# fit.lim.HMLER <- glmQLFit(dge.lim.HMLER, mod.lim.HMLER)
+# fit.lim.P53 <- glmQLFit(dge.lim.P53, mod.lim.P53)
+# fit.lim.ZEB1 <- glmQLFit(dge.lim.ZEB1, mod.lim.ZEB1)
+# 
+# fit.lim.HMLER <- glmQLFTest(fit.lim.HMLER)
+# fit.lim.P53 <- glmQLFTest(fit.lim.P53)
+# fit.lim.ZEB1 <- glmQLFTest(fit.lim.ZEB1)
+# 
+# tt.lim.HMLER <- topTags(fit.lim.HMLER, n=Inf)
+# tt.lim.P53 <- topTags(fit.lim.P53, n=Inf)
+# tt.lim.ZEB1 <- topTags(fit.lim.ZEB1, n=Inf)
+# 
+# head(tt.lim.HMLER, 10)
+# head(tt.lim.P53, 10)
+# head(tt.lim.ZEB1, 10)
+# 
+# sum(tt.lim.HMLER$table$FDR < 0.05)
+# sum(tt.lim.P53$table$FDR < 0.05)
+# sum(tt.lim.ZEB1$table$FDR < 0.05)
+# 
+# hist(tt.lim.HMLER$table$PValue, xlab="Raw p-values", las=1, main="HMLER")
+# hist(tt.lim.P53$table$PValue, xlab="Raw p-values", las=1, main="P53")
+# hist(tt.lim.ZEB1$table$PValue, xlab="Raw p-values", las=1, main="ZEB1")
+```
+
+```{r}
+# table(se.filt$cell_line, se.filt$treatment)
+```
+
+### Limited replication + factorial design
+```{r  Limited replication + factorial design}
+co <- factor(paste(se.filt$cell_line, se.filt$treatment, sep="."))
+co <- as.factor(gsub("-","_",co))
+table(co)
+```
+```{r}
+mod <-model.matrix(~ 0 + co, data = colData(se.filt))
+mod0 <- model.matrix(~ 0, data = colData(se.filt))
+colnames(mod) <- levels(co)
+mod
+#sv <- sva(assays(se.filt)$logCPM, mod, mod0)
+```
+```{r}
+dge.filt <- estimateDisp(dge.filt, mod)
+fit <- glmQLFit(dge.filt, mod)
+dim(fit$coefficients)
+```
+```{r}
+colnames(fit)
+```
+
+```{r}
+# Build contrasts between treatments for each cell line
+contrasts.lim.fact <- makeContrasts(HMLER = HMLER.siMBD2-HMLER.siControl,
+                                    ZEB1 = HME_ZEB1_RAS.siMBD2-HME_ZEB1_RAS.siControl,
+                                    P53 = HME_shP53_RAS.siMBD2-HME_shP53_RAS.siControl,
+                                    levels = mod)
+# Apply the contrasts
+qlf.HMLER <- glmQLFTest(fit, contrast = contrasts.lim.fact[, "HMLER"])
+qlf.ZEB1 <- glmQLFTest(fit, contrast = contrasts.lim.fact[, "ZEB1"])
+qlf.P53 <- glmQLFTest(fit, contrast = contrasts.lim.fact[, "P53"])
+
+# Combine into a list
+qlf.all <- list(qlf.HMLER, qlf.ZEB1, qlf.P53)
+names(qlf.all) <- c("HMLER", "ZEB1", "P53")
+
+# Get the tables of DEGs
+tt.all <- lapply(FUN = topTags, X=qlf.all, n=Inf)
+tt.all
+
+# Get the number of significant DEGs with FDR<0.01 and logFC>1
+lapply(X=tt.all, FUN= function(i) sum(i$table$FDR<0.01 & i$table$logFC>1))
+
+# Get the lists of p-values and plot the histograms
+pvals <- lapply(qlf.all, function(x) x$table$PValue)
+mapply(hist, pvals, main = names(qlf.all), xlab="uncorrected p-value")
+```
+
+```{r}
+# Get the summary of which genes are downreg, upreg or unchanging
+decision.all <- lapply(X=qlf.all, FUN = decideTests)
+
+# Change the column names
+decision.all <- mapply(FUN = function(i, j) {colnames(i) <- j; return(i)}, i=decision.all, j=names(qlf.all), SIMPLIFY = F)
+
+# decision.HMLER <- decideTests(qlf.HMLER)
+# colnames(decision.HMLER) <- "HMLER"
+# decision.ZEB1 <- decideTests(qlf.ZEB1)
+# colnames(decision.ZEB1) <- "ZEB1"
+# decision.P53 <- decideTests(qlf.P53)
+# colnames(decision.P53) <- "P53"
+
+# myfun = function(x, y="colname") {
+#   tmp <- decideTests(x)
+#   colnames(x) <- y
+#   return(x)
+# }
+
+# decision.all <- mapply(FUN = myfun, x = decision.all, y = titles)
+
+# Turn into dataframe
+#decision.all <- cbind(decision.HMLER, decision.ZEB1, decision.P53)
+#summarized_table <- as.matrix(as.data.frame(lapply(X = decision.all, FUN = summary)))
+summarized_table <- cbind(summary(decision.all[[1]]), summary(decision.all[[2]]), summary(decision.all[[3]]))
+summarized_table
+```
+
+```{r}
+vennDiagram(as.data.frame(decision.all))
+```
+```{r}
+decision.all.abs <- abs(as.data.frame(decision.all))
+decision.all.abs <- as.data.frame(decision.all.abs)
+head(decision.all.abs)
+library(UpSetR)
+upset(decision.all.abs, nsets = 3)
+```
+
+# Functional analysis
+
+Here we will do the functional analysis.
+
+# Discussion
+
+Here we discuss the findings.
+
+# Conclusions
+
+Here we summarize our conclusions.
+
+# Session information
+
+```{r}
+sessionInfo()
+```
+
+# References
